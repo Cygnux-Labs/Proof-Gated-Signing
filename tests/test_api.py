@@ -1,6 +1,6 @@
 """pgs.check through its public API. Tests that take `w` run on the paper's test world on a
 local Hardhat node (started by conftest.py); the others need no chain."""
-import itertools, random
+import itertools, json, os, random, subprocess, sys
 from fractions import Fraction
 
 import pytest
@@ -31,7 +31,7 @@ def front_run(w, usdc):
 
 def test_allows_a_swap_and_a_payment_with_bounds(w):
     calls = swap(w, 1_000 * E18) + [w.call("USDC", "transfer", w.alice, 500 * E18)]
-    v = pgs.check(make_policy(w), calls, chain(w))
+    v = pgs.check(make_policy(w), calls, chain(w), pgs.Session())
     assert v.allow and v.reasons == [] and v.counterexample is None
     bal, allow, own, recv = v.post
     assert dict(bal)[w.addr["USDC"]] == -1_500 * E18           # outflow may not exceed the simulated one
@@ -44,7 +44,7 @@ def test_allows_a_swap_and_a_payment_with_bounds(w):
 
 
 def test_refuses_a_transfer_to_an_unknown_address_with_a_counterexample(w):
-    v = pgs.check(make_policy(w), [w.call("USDC", "transfer", w.attacker, 1_000 * E18)], chain(w))
+    v = pgs.check(make_policy(w), [w.call("USDC", "transfer", w.attacker, 1_000 * E18)], chain(w), pgs.Session())
     assert not v.allow and v.post is None and v.proof is None
     assert f"eoa-recipient-not-allowlisted:{w.attacker}" in v.reasons
     assert v.counterexample["violated"] == "relative-loss"
@@ -61,7 +61,7 @@ def test_session_budget_refuses_once_spent(w):
 def test_proof_rechecks_and_bounds_imply_the_policy(w):
     """Theorem 1, sampled: every outcome at or above the bounds, at every price in the band, meets the policy."""
     P = make_policy(w)
-    v = pgs.check(P, swap(w, 20_000 * E18) + [w.call("USDC", "transfer", w.alice, 500 * E18)], chain(w))
+    v = pgs.check(P, swap(w, 20_000 * E18) + [w.call("USDC", "transfer", w.alice, 500 * E18)], chain(w), pgs.Session())
     assert v.allow
     s = z3.Solver()
     s.from_string(v.proof)
@@ -84,14 +84,14 @@ def test_proof_rechecks_and_bounds_imply_the_policy(w):
 def test_state_drift_reverts_under_bounds_and_costs_the_wallet_without(w):
     P, ch = make_policy(w), chain(w)
     calls = swap(w, 100_000 * E18)                     # no minOut: the agent set no slippage bound
-    v = pgs.check(P, calls, ch)
+    v = pgs.check(P, calls, ch, pgs.Session())
     assert v.allow
     sid = w.snapshot()
     front_run(w, 500_000 * E18)                        # the state drifts after the check
     with pytest.raises(Exception, match="guard:balance"):
         w.exec_checked(calls, *v.post)
     w.revert(sid)
-    v = pgs.check(P, calls, ch, mode="sim")            # simulation and proof alone: no bounds to enforce
+    v = pgs.check(P, calls, ch, pgs.Session(), "sim")  # simulation and proof alone: no bounds to enforce
     assert v.allow and v.post is None
     weth0 = w.balance("WETH", w.addr["WALLET"])
     front_run(w, 500_000 * E18)
@@ -126,7 +126,7 @@ OK = {"target": C, "value": 0, "data": "0x"}
 ])
 def test_malformed_calls_are_refused_before_touching_the_chain(calls):
     with pytest.raises(ValueError):
-        pgs.check(POLICY, calls, chain=None)
+        pgs.check(POLICY, calls, None, pgs.Session())
 
 
 @pytest.mark.parametrize("policy, mode", [
@@ -135,8 +135,52 @@ def test_malformed_calls_are_refused_before_touching_the_chain(calls):
     (pgs.Policy(prices={"USDC": 1.0}, assets={"USDC": A.lower()}), "sim+assert"),       # not checksummed
     (pgs.Policy(prices={"USDC": 1.0}, assets={"USDC": A}, payees={B.lower(): 1.0}), "sim+assert"),
     (pgs.Policy(prices={"USDC": 1.0}, assets={"USDC": A}, band=1.5), "sim+assert"),
+    (pgs.Policy(prices={"USDC": 1.0}, assets={"USDC": A}, payees={B: "100"}), "sim+assert"),   # cap not a number
+    (pgs.Policy(prices={"USDC": None}, assets={"USDC": A}), "sim+assert"),                     # price not a number
     (POLICY, "assert"),
 ])
 def test_malformed_policy_or_mode_is_refused(policy, mode):
     with pytest.raises(ValueError):
-        pgs.check(policy, [OK], chain=None, mode=mode)
+        pgs.check(policy, [OK], None, pgs.Session(), mode)
+
+
+def test_a_session_is_required():
+    with pytest.raises(ValueError, match="session"):
+        pgs.check(POLICY, [OK], None, None)
+
+
+def test_selector_only_transfer_to_a_tracked_token_is_refused_clearly():
+    with pytest.raises(ValueError, match="needs 68"):
+        pgs.check(POLICY, [{"target": A, "value": 0, "data": "0xa9059cbb"}], None, pgs.Session())
+
+
+def test_lowercase_target_is_checksummed_before_simulating(w):
+    P, ch, calls = make_policy(w), chain(w), swap(w, 1_000 * E18)
+    v = pgs.check(P, [{**c, "target": c["target"].lower()} for c in calls], ch, pgs.Session())
+    assert v.allow and v.post == pgs.check(P, calls, ch, pgs.Session()).post
+
+
+def test_session_rechecks_an_allowance_granted_earlier(w):
+    w.exec_raw([w.call("USDC", "approve", w.addr["DRAINER"], 1_000 * E18)])   # granted outside this batch
+    P, ch, calls = make_policy(w), chain(w), swap(w, 1_000 * E18)
+    assert pgs.check(P, calls, ch, pgs.Session()).allow                      # a new session doesn't know it
+    v = pgs.check(P, calls, ch, pgs.Session(allowance_pairs={(w.addr["USDC"], w.addr["DRAINER"])}))
+    assert not v.allow and v.reasons == [f"residual-allowance:{w.addr['DRAINER']}"]
+
+
+def test_check_leaves_the_chain_unchanged_under_python_O(w):
+    """The simulation must be reverted even when asserts are stripped."""
+    pay = w.call("USDC", "transfer", w.alice, 10 * E18)
+    script = (
+        "import json, sys; from web3 import Web3; import pgs\n"
+        "url, wallet, agent, usdc, alice, data = sys.argv[1:]\n"
+        "P = pgs.Policy(prices={'USDC': 1.0}, assets={'USDC': usdc}, payees={alice: 100.0})\n"
+        "ch = pgs.Web3Chain(Web3(Web3.HTTPProvider(url)), wallet, agent)\n"
+        "v = pgs.check(P, [{'target': usdc, 'value': 0, 'data': data}], ch, pgs.Session())\n"
+        "print(json.dumps({'debug': __debug__, 'allow': v.allow}))\n")
+    before = (w.balance("USDC", w.alice), w.balance("USDC", w.addr["WALLET"]), w.w3.eth.block_number)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run([sys.executable, "-O", "-c", script, w.w3.provider.endpoint_uri, w.addr["WALLET"], w.agent,
+                          w.addr["USDC"], w.alice, pay["data"]], cwd=root, capture_output=True, text=True, check=True)
+    assert json.loads(out.stdout) == {"debug": False, "allow": True}
+    assert (w.balance("USDC", w.alice), w.balance("USDC", w.addr["WALLET"]), w.w3.eth.block_number) == before

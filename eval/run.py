@@ -148,7 +148,9 @@ def main():
     w3 = w3_connect(f"http://127.0.0.1:{a.port}")
     if a.committed_nonces:
         for who, n in [(w3.eth.accounts[0], 188), (w3.eth.accounts[2], 19)]:
-            assert w3.provider.make_request("hardhat_setNonce", [who, hex(n)]).get("result") is True, "needs a fresh node"
+            r = w3.provider.make_request("hardhat_setNonce", [who, hex(n)])
+            if r.get("result") is not True:
+                sys.exit(f"--committed-nonces needs a freshly started node: {r.get('error', r)}")
     w = World(w3).build()
     base = {"sid": w.snapshot()}
     fams = S.HARMFUL + S.BENIGN if a.families == "all" else a.families.split(",")

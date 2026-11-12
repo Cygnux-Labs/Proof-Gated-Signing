@@ -2,7 +2,7 @@
 (optionally) compile on-chain post-conditions whose satisfaction is *proved* to imply
 the policy, so the guarantee survives state drift between simulation and inclusion.
 
-Public API: check(policy, calls, chain, session=None, mode="sim+assert") -> Verdict.
+Public API: check(policy, calls, chain, session, mode="sim+assert") -> Verdict.
 `chain` is a state provider (see pgs.chain.Web3Chain for the methods it needs).
 """
 import time
@@ -81,17 +81,26 @@ class Verdict:
     latency_s: float
 
 
-def _validate(policy, calls, mode):
-    if mode not in MODES:
-        raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0
+
+
+def _check_policy(policy):
     if set(policy.assets) != set(policy.prices) - {"ETH"}:
         raise ValueError("policy.assets must give a token address for every priced asset except ETH, and no others")
     addrs = [*policy.assets.values(), *policy.payees, *policy.trusted_spenders, *policy.owned]
     bad = [a for a in addrs if not isinstance(a, str) or not Web3.is_checksum_address(a)]
     if bad:
         raise ValueError(f"policy addresses must be checksummed: {bad}")
-    if not 0 <= policy.band < 1 or not 0 <= policy.inflow_tol < 1:
+    nums = [*policy.prices.values(), *policy.payees.values(), policy.max_rel_loss, policy.floor_usd, policy.window_usd]
+    if not all(map(_num, nums)):
+        raise ValueError("policy prices, payee caps, max_rel_loss, floor_usd and window_usd must be non-negative numbers")
+    if not (_num(policy.band) and policy.band < 1 and _num(policy.inflow_tol) and policy.inflow_tol < 1):
         raise ValueError("policy.band and policy.inflow_tol must be in [0, 1)")
+
+
+def _checked_calls(calls):
+    """The calls with checksummed targets, or ValueError if any is malformed."""
     if not isinstance(calls, list):
         raise ValueError("calls must be a list of {target, value, data}")
     for c in calls:
@@ -105,12 +114,17 @@ def _validate(policy, calls, mode):
         if not isinstance(d, str) or not d.startswith("0x") or len(d) % 2:
             raise ValueError(f"call data must be 0x-prefixed hex: {d!r}")
         bytes.fromhex(d[2:])   # raises ValueError on non-hex
+    return [{**c, "target": Web3.to_checksum_address(c["target"])} for c in calls]
 
 
 # ---------------------------------------------------------------------- effects
 def simulate(policy, calls, chain, session=None) -> Effects:
-    """Run the batch on a throwaway copy of the chain and extract its effects on the wallet."""
-    P, W = policy, chain.wallet
+    """Run the batch on a throwaway copy of the chain and extract its effects on the wallet.
+    Without a session, no earlier approval is re-read: only allowances that this batch's own
+    Approval events reveal are checked."""
+    _check_policy(policy)
+    calls = _checked_calls(calls)
+    P = policy
     assets = {k: None if k == "ETH" else P.assets[k] for k in P.prices}   # key -> address (None for ETH)
     addr2key = {v: k for k, v in assets.items() if v}
     # Payments: only *top-level, direct* transfers to allowlisted payees are candidates, and
@@ -118,16 +132,19 @@ def simulate(policy, calls, chain, session=None) -> Effects:
     # transfer fees count as loss. Credited receipts are enforced on-chain (RecvCheck).
     intended = {}
     for c in calls:
-        tgt = Web3.to_checksum_address(c["target"])
+        tgt = c["target"]
         if c["value"] > 0 and tgt in P.payees:
             intended[(tgt, "ETH")] = intended.get((tgt, "ETH"), 0) + c["value"]
         d = c["data"][2:]
         if tgt in addr2key and d[:8] == SEL_TRANSFER:
+            if len(d) < 8 + 128:
+                raise ValueError(f"transfer call to {tgt} has {len(d) // 2} bytes of data; it needs 68")
             to = Web3.to_checksum_address("0x" + d[8 + 24: 8 + 64])
             amt = int(d[8 + 64: 8 + 128], 16)
             if to in P.payees:
                 k = addr2key[tgt]
                 intended[(to, k)] = intended.get((to, k), 0) + amt
+    W = chain.wallet
     pre = {k: chain.balance(a, W) for k, a in assets.items()}
     payee_pre = {(a, k): chain.balance(assets[k], a) for (a, k) in intended}
     with chain.simulate(calls) as r:
@@ -204,15 +221,20 @@ def prove(policy, box_lo, exact, payments, spent_usd=0.0):
     return False, {"violated": "solver-unknown"}, None
 
 
-def check(policy, calls, chain, session=None, mode="sim+assert") -> Verdict:
+def check(policy, calls, chain, session, mode="sim+assert") -> Verdict:
     """Decide on one batch of calls the wallet would make. mode 'sim': simulate and prove,
     then sign the plain batch; 'sim+assert': also return post-conditions, proved to imply
-    the policy, for AgentWallet.executeChecked to enforce atomically at execution."""
-    _validate(policy, calls, mode)
+    the policy, for AgentWallet.executeChecked to enforce atomically at execution.
+    `session` is required: it holds the loss budget spent so far and the allowances granted
+    earlier, which every check re-reads. Use one Session per wallet session."""
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
+    if not isinstance(session, Session):
+        raise ValueError("session must be a pgs.Session (it carries the loss budget and the allowances to re-check)")
     t0 = time.time()
-    P, W = policy, chain.wallet
-    spent = session.spent_usd if session else 0.0
-    eff = simulate(policy, calls, chain, session)
+    P, spent = policy, session.spent_usd
+    eff = simulate(policy, calls, chain, session)   # validates the policy and the calls first
+    W = chain.wallet
     reasons, cex, proof = [], None, None
     if eff.reverted:
         reasons.append("simulation-reverted")

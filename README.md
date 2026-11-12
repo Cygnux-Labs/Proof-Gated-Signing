@@ -96,7 +96,7 @@ policy = pgs.Policy(
     trusted_spenders={pool},                                # who may keep an allowance
     owned=[vault])                                          # contracts whose owner() must stay the wallet
 chain = pgs.Web3Chain(w3, wallet=wallet, sender=agent)      # the state provider
-session = pgs.Session()                                     # loss so far, against window_usd
+session = pgs.Session()                                     # one per wallet session: loss so far, approvals to re-check
 
 calls = [{"target": usdc, "value": 0, "data": "0x095ea7b3..."}, ...]   # what the agent proposes
 v = pgs.check(policy, calls, chain, session)
@@ -108,7 +108,7 @@ else:
     print(v.reasons, v.counterexample)
 ```
 
-`pgs.check(policy, calls, chain, session=None, mode="sim+assert")` returns a `Verdict`:
+`pgs.check(policy, calls, chain, session, mode="sim+assert")` returns a `Verdict`:
 
 | Field | What it holds |
 |---|---|
@@ -119,7 +119,7 @@ else:
 | `counterexample` | the solver's counterexample when the policy or the bounds fail, for example `{"violated": "relative-loss", "loss_usd": 1000.0}` |
 | `effects` | what the simulation did: balance changes, allowances, owners, payments |
 
-Malformed calls or policies raise `ValueError` before the chain is touched. `pgs.prove(policy, box, exact, payments)` runs the solver step alone, with no chain. `pgs.Web3Chain` needs a node with `evm_snapshot`/`evm_revert` and an unlocked `sender` (tested on Hardhat); any object with the same methods can replace it (see `pgs/chain.py`). The wallet must implement `executeChecked` like `AgentWallet` in `contracts/Testbed.sol`.
+The session is required: it holds the loss spent so far against `window_usd` and every (token, spender) the wallet approved earlier, which each check re-reads. Call targets are checksummed before simulating. Malformed calls or policies (including a `transfer` to a tracked token with short data, or a non-numeric cap or price) raise `ValueError` before the chain is touched. `pgs.prove(policy, box, exact, payments)` runs the solver step alone, with no chain. `pgs.Web3Chain` needs a node with `evm_snapshot`/`evm_revert` and an unlocked `sender` (tested on Hardhat); any object with the same methods can replace it (see `pgs/chain.py`). The wallet must implement `executeChecked` like `AgentWallet` in `contracts/Testbed.sol`.
 
 [`examples/check_tx.py`](examples/check_tx.py) runs this against the local chain: an allowed swap with its bounds, a refused payment with its counterexample, and a front-run that makes the wallet revert the swap.
 

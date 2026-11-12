@@ -1,4 +1,4 @@
-"""Proof-Gated Signing: pgs.check(policy, calls, chain, session=None, mode="sim+assert") -> Verdict."""
+"""Proof-Gated Signing: pgs.check(policy, calls, chain, session, mode="sim+assert") -> Verdict."""
 from .guard import Effects, Policy, Session, Verdict, check, prove, simulate
 from .chain import Web3Chain
 

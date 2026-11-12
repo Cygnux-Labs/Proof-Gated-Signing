@@ -66,4 +66,6 @@ class Web3Chain:
                 r = None
             yield r if r is not None and r.status == 1 else None
         finally:
-            assert self.w3.provider.make_request("evm_revert", [sid])["result"] is True
+            r = self.w3.provider.make_request("evm_revert", [sid])
+            if r.get("result") is not True:
+                raise RuntimeError(f"evm_revert failed; the node may still hold the simulated batch: {r}")
