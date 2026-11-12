@@ -75,7 +75,7 @@ python3.11 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt   # exact versions; the file says how they were chosen
 npm ci                            # Hardhat 2.29.1 and solc 0.8.26, from package-lock.json
 node compile.js                   # rebuilds build/artifacts.json; the output matches the committed file
-python -m pytest                  # 22 tests; starts and stops its own Hardhat node
+python -m pytest                  # starts and stops its own Hardhat node
 ```
 
 To use only the library in another project: `pip install git+https://github.com/Cygnux-Labs/Proof-Gated-Signing` (it needs `web3` and `z3-solver`).
