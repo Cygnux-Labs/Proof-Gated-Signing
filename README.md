@@ -122,3 +122,7 @@ paper/                  LaTeX source and PDF
   note   = {Preprint}
 }
 ```
+
+## License
+
+Apache License 2.0, © 2026 Cygnux Labs. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
