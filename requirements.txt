@@ -1,0 +1,173 @@
+# Exact versions for reproducing the paper, on Python 3.11. How they were chosen:
+#   web3 8.0.0, z3-solver 5.1.0.0  the versions the paper names (web3.py 8.0, z3-solver 5.1)
+#   matplotlib 3.10.9              the version recorded in the paper's figure PDFs (eval/figures.py)
+#   pytest 9.0.2                   runs tests/
+#   everything else                resolved as of the paper's upload date (2026-09-30) by:
+#     printf 'web3==8.0.0\nz3-solver==5.1.0.0\nmatplotlib==3.10.9\npytest==9.0.2\n' | uv pip compile - \
+#       --universal --python-version 3.11 --exclude-newer 2026-09-30T00:00:00Z --no-header
+# With these versions the offline reproduction matches results/ (README, "Reproduce the paper").
+aiohappyeyeballs==2.7.1
+    # via aiohttp
+aiohttp==3.14.3
+    # via web3
+aiosignal==1.4.0
+    # via aiohttp
+annotated-types==0.8.0
+    # via pydantic
+attrs==26.1.0
+    # via aiohttp
+bitarray==3.11.0
+    # via eth-account
+certifi==2026.7.22
+    # via requests
+charset-normalizer==3.5.1
+    # via requests
+ckzg==2.1.8
+    # via eth-account
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via pytest
+contourpy==1.3.3 ; python_full_version < '3.12'
+    # via matplotlib
+contourpy==1.4.0 ; python_full_version >= '3.12'
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
+cytoolz==1.1.0 ; implementation_name == 'cpython'
+    # via eth-utils
+eth-abi==6.0.0
+    # via
+    #   eth-account
+    #   web3
+eth-account==0.14.0
+    # via web3
+eth-hash==0.8.0
+    # via
+    #   eth-utils
+    #   web3
+eth-keyfile==0.10.0
+    # via eth-account
+eth-keys==0.8.0
+    # via
+    #   eth-account
+    #   eth-keyfile
+eth-rlp==3.0.0
+    # via eth-account
+eth-typing==6.0.0
+    # via
+    #   eth-abi
+    #   eth-keys
+    #   eth-utils
+    #   py-ecc
+    #   web3
+eth-utils==6.0.0
+    # via
+    #   eth-abi
+    #   eth-account
+    #   eth-keyfile
+    #   eth-keys
+    #   eth-rlp
+    #   py-ecc
+    #   rlp
+    #   web3
+fonttools==4.66.1
+    # via matplotlib
+frozenlist==1.8.0
+    # via
+    #   aiohttp
+    #   aiosignal
+hexbytes==2.0.0
+    # via
+    #   eth-account
+    #   eth-rlp
+    #   web3
+idna==3.20
+    # via
+    #   requests
+    #   yarl
+iniconfig==2.3.0
+    # via pytest
+kiwisolver==1.5.1
+    # via matplotlib
+matplotlib==3.10.9
+multidict==6.9.1
+    # via
+    #   aiohttp
+    #   yarl
+numpy==2.4.6 ; python_full_version < '3.12'
+    # via
+    #   contourpy
+    #   matplotlib
+numpy==2.5.3 ; python_full_version >= '3.12'
+    # via
+    #   contourpy
+    #   matplotlib
+packaging==26.3
+    # via
+    #   matplotlib
+    #   pytest
+parsimonious==0.10.0
+    # via eth-abi
+pillow==12.3.0
+    # via matplotlib
+pluggy==1.6.0
+    # via pytest
+propcache==0.5.4
+    # via
+    #   aiohttp
+    #   yarl
+py-ecc==8.0.0
+    # via eth-keyfile
+pycryptodome==3.23.0
+    # via
+    #   eth-hash
+    #   eth-keyfile
+pydantic==2.13.5
+    # via
+    #   eth-account
+    #   eth-utils
+    #   web3
+pydantic-core==2.46.5
+    # via pydantic
+pygments==2.21.0
+    # via pytest
+pyparsing==3.3.3
+    # via matplotlib
+pytest==9.0.2
+python-dateutil==2.9.0.post0
+    # via matplotlib
+pyunormalize==18.0.0
+    # via web3
+pywin32==312 ; sys_platform == 'win32'
+    # via web3
+regex==2026.9.29
+    # via parsimonious
+requests==2.34.2
+    # via web3
+rlp==5.0.0
+    # via
+    #   eth-account
+    #   eth-rlp
+six==1.17.0
+    # via python-dateutil
+toolz==1.1.0 ; implementation_name == 'cpython' or implementation_name == 'pypy'
+    # via
+    #   cytoolz
+    #   eth-utils
+typing-extensions==4.16.0
+    # via
+    #   aiohttp
+    #   aiosignal
+    #   eth-typing
+    #   pydantic
+    #   pydantic-core
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via pydantic
+urllib3==2.8.0
+    # via requests
+web3==8.0.0
+websockets==17.1
+    # via web3
+yarl==1.25.1
+    # via aiohttp
+z3-solver==5.1.0.0

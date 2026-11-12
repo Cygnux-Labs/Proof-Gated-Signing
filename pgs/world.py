@@ -16,7 +16,8 @@ MAX = 2**256 - 1
 
 def w3_connect(url="http://127.0.0.1:8545"):
     w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 60}))
-    assert w3.is_connected(), "hardhat node not running"
+    if not w3.is_connected():
+        raise ConnectionError(f"no node at {url}: start one with ./node.sh")
     return w3
 
 
@@ -48,7 +49,9 @@ class World:
         return self.w3.provider.make_request("evm_snapshot", [])["result"]
 
     def revert(self, sid):
-        assert self.w3.provider.make_request("evm_revert", [sid])["result"] is True
+        r = self.w3.provider.make_request("evm_revert", [sid])
+        if r.get("result") is not True:
+            raise RuntimeError(f"evm_revert failed: {r}")
 
     # -- world construction -------------------------------------------------
     def build(self):

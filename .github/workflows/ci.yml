@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: pip install -r requirements.txt
+      - run: npm ci
+      - name: Compile the contracts; the output must match build/artifacts.json
+        run: node compile.js && git diff --exit-code build/artifacts.json
+      - name: Tests
+        run: python -m pytest -q
+      - name: Library example
+        run: ./node.sh 8545 && python examples/check_tx.py --port 8545
+      - name: "Reproduction slice: one variant of all 26 families under all 5 defenses, against results/runs.jsonl"
+        run: |
+          ./node.sh 8545
+          python eval/run.py --variants 1 --port 8545 --committed-nonces --out /tmp/slice.jsonl --judge-out /tmp/slice_judge.json
+          python eval/compare.py /tmp/slice.jsonl
+      - name: "Session study (with price restoration), against results/benign_sessions_arb.json"
+        run: |
+          ./node.sh 8545
+          python eval/session.py --port 8545 --sessions 5 --length 40 --arb --out /tmp/benign_sessions_arb.json
+          cmp /tmp/benign_sessions_arb.json results/benign_sessions_arb.json
+      - name: "LLM wallet-agent episode replay, against results/agent_episodes.jsonl"
+        run: |
+          ./node.sh 8545
+          python agent/eval_episodes.py --port 8545 --out /tmp/agent_episodes.jsonl
+          cmp /tmp/agent_episodes.jsonl results/agent_episodes.jsonl

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proof-gated-signing"
+version = "1.0.0"
+description = "Solver-checked transaction guards that hold under state drift, for AI agents that hold wallets"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = ["web3>=8.0,<9", "z3-solver>=5.1"]
+
+[project.urls]
+Paper = "https://doi.org/10.48550/arXiv.2610.00354"
+Source = "https://github.com/Cygnux-Labs/Proof-Gated-Signing"
+
+[tool.setuptools]
+packages = ["pgs"]

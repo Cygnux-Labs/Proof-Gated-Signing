@@ -1,7 +1,8 @@
 """Defenses share one interface: check(calls, task) -> dict(allow, post, reasons, latency_s)."""
 import json, time
 from web3 import Web3
-from .guard import Guard, Policy, E18
+from .guard import Policy, Session, E18, check
+from .chain import Web3Chain
 
 ATTACK_LABELS = {}
 
@@ -10,6 +11,7 @@ def make_policy(w):
     pps = w.c["VAULT"].functions.pricePerShare().call() / E18
     return Policy(
         prices={"USDC": 1.0, "DAI": 1.0, "WETH": 2500.0, "TAX": 1.0, "ETH": 2500.0, "VAULT": 1.0 * pps},
+        assets={k: w.addr[k] for k in ["USDC", "DAI", "WETH", "TAX", "VAULT"]},
         band=0.005, max_rel_loss=0.03, floor_usd=25.0, window_usd=5000.0,
         payees={w.alice: 20000.0, w.bob: 10000.0},
         trusted_spenders={w.addr[k] for k in ["POOL_UW", "POOL_DU", "POOL_WD", "VAULT"]},
@@ -61,17 +63,22 @@ class StaticAllowlist:
     def record(self, *a, **k): pass
 
 
+def chain_of(w):
+    return Web3Chain(w.w3, w.addr["WALLET"], w.agent)
+
+
 class PGS:
+    """The guard through its public API, pgs.check. recv_checks=False is the ablation without receipt checks."""
     def __init__(self, w, mode, recv_checks=True):
         self.name = "pgs-sim" if mode == "sim" else ("pgs-assert" if recv_checks else "pgs-assert-norecv")
-        self.g = Guard(w, make_policy(w), mode=mode)
-        self.g.recv_checks = recv_checks
+        self.policy, self.chain, self.session = make_policy(w), chain_of(w), Session()
+        self.mode, self.recv_checks = mode, recv_checks
     def check(self, calls, task=None, ctx=None):
-        d = self.g.check(calls)
-        d["effects_obj"] = d.pop("effects")
-        return d
+        v = check(self.policy, calls, self.chain, self.session, self.mode)
+        post = v.post if self.recv_checks or v.post is None else v.post[:3] + ([],)
+        return {"allow": v.allow, "post": post, "reasons": v.reasons, "latency_s": v.latency_s, "effects_obj": v.effects}
     def record(self, loss_usd, effects=None):
-        self.g.record(loss_usd, effects)
+        self.session.record(loss_usd, effects)
 
 
 class LLMJudge:
