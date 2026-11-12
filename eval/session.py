@@ -63,11 +63,11 @@ def main():
                         D.record(vb - wallet_value(w, pps) - paid, eff)
                 if a.arb: restore_prices(w)
                 log.append({"t": t, "family": fam, "allow": dec["allow"], "ok": ok,
-                            "reason": (dec["reasons"] or [""])[0][:60], "spent": D.g.spent_window})
+                            "reason": (dec["reasons"] or [""])[0][:60], "spent": D.session.spent_usd})
         first_block = next((x["t"] for x in log if not x["allow"] and "window" in x["reason"]), None)
         out.append({"session": s, "n": len(log), "passed": sum(x["ok"] for x in log),
-                    "first_budget_block_at": first_block, "final_spent": D.g.spent_window, "log": log})
-        print(s, out[-1]["passed"], "/", len(log), "first budget block at", first_block, "spent", round(D.g.spent_window))
+                    "first_budget_block_at": first_block, "final_spent": D.session.spent_usd, "log": log})
+        print(s, out[-1]["passed"], "/", len(log), "first budget block at", first_block, "spent", round(D.session.spent_usd))
     json.dump(out, open(a.out, "w"), indent=1)
 
 

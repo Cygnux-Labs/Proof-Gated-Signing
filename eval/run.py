@@ -1,14 +1,15 @@
 """Run every scenario variant under every defense on a fresh copy of the same world.
 Writes results/runs.jsonl and results/judge_inputs.json (for LLM-judge baselines).
 
-usage: python eval/run.py --variants 10 --port 8545 [--llm results/llm_*.json ...]
+usage: python eval/run.py --variants 10 --port 8545 [--committed-nonces] [--llm results/llm_*.json ...]
 """
 import argparse, json, os, random, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from web3 import Web3
 from pgs.world import World, w3_connect, E18
 from pgs import scenarios as S
-from pgs.defenses import NoDefense, StaticAllowlist, PGS, LLMJudge, make_policy
+from pgs.defenses import NoDefense, StaticAllowlist, PGS, LLMJudge, make_policy, chain_of
+from pgs.guard import simulate
 
 PRICES = {"USDC": 1.0, "DAI": 1.0, "WETH": 2500.0, "TAX": 1.0, "ETH": 2500.0}
 DEAD = Web3.to_checksum_address("0x000000000000000000000000000000000000dEaD")
@@ -88,14 +89,14 @@ def run_one(w, base, fam, seed, defense_factory, judge_rows=None):
     a0, v0 = attacker_value(w), wallet_value(w, pps)
     steps = []
     sid = f"{fam}:{seed}"
-    probe = PGS(w, "sim") if judge_rows is not None else None
+    probe = (make_policy(w), chain_of(w)) if judge_rows is not None else None
     for i, calls in enumerate(sc["txs"]):
         dec = D.check(calls, sc["task"], {"sid": sid, "i": i})
         rec = {"i": i, "allow": dec["allow"], "reasons": dec["reasons"], "latency_s": dec["latency_s"]}
         eff = dec.get("effects_obj")
         if judge_rows is not None:
             # judge sees the simulation of this tx on the *actual* current state
-            eff = probe.g.simulate(calls)
+            eff = simulate(probe[0], calls, probe[1])
             judge_rows[f"{sid}#{i}"] = {"task": sc["task"], "tx_index": i, "n_txs": len(sc["txs"]),
                                         "calls": [decode(w, c) for c in calls],
                                         "simulated_effects": effects_summary(w, eff)}
@@ -140,8 +141,15 @@ def main():
     ap.add_argument("--llm", nargs="*", default=[])
     ap.add_argument("--out", default="results/runs.jsonl")
     ap.add_argument("--judge-out", default="results/judge_inputs.json")
+    ap.add_argument("--committed-nonces", action="store_true",
+                    help="start the deployer at nonce 188 and the attacker at 19, as on the node that produced "
+                         "results/runs.jsonl (its fifth world), so contract addresses, reasons and gas match it")
     a = ap.parse_args()
-    w = World(w3_connect(f"http://127.0.0.1:{a.port}")).build()
+    w3 = w3_connect(f"http://127.0.0.1:{a.port}")
+    if a.committed_nonces:
+        for who, n in [(w3.eth.accounts[0], 188), (w3.eth.accounts[2], 19)]:
+            assert w3.provider.make_request("hardhat_setNonce", [who, hex(n)]).get("result") is True, "needs a fresh node"
+    w = World(w3).build()
     base = {"sid": w.snapshot()}
     fams = S.HARMFUL + S.BENIGN if a.families == "all" else a.families.split(",")
     defs = [("none", lambda w: NoDefense(w)), ("allowlist", lambda w: StaticAllowlist(w)),

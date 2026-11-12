@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use Proof-Gated Signing, please cite the paper."
+title: "Proof-Gated Signing"
+authors:
+  - family-names: Ghosh
+    given-names: Bravish
+repository-code: "https://github.com/Cygnux-Labs/Proof-Gated-Signing"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "Proof-Gated Signing: Solver-Checked Transaction Guards that Hold Under State Drift for Onchain AI Agents"
+  authors:
+    - family-names: Ghosh
+      given-names: Bravish
+  year: 2026
+  journal: "arXiv preprint"
+  doi: "10.48550/arXiv.2610.00354"
+  url: "https://arxiv.org/abs/2610.00354"
+  repository-code: "https://github.com/Cygnux-Labs/Proof-Gated-Signing"
+  identifiers:
+    - type: doi
+      value: "10.48550/arXiv.2610.00354"
+    - type: other
+      value: "arXiv:2610.00354"
+      description: "arXiv identifier"

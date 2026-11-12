@@ -1,8 +1,10 @@
 # Proof-Gated Signing
 
-Transaction guards for AI agents that hold wallets.
+Proof-Gated Signing (PGS) is a transaction guard for AI agents that hold wallets.
+Before a transaction is signed, it simulates it, uses the Z3 solver to prove the outcome meets a value and permission policy at every price in an oracle band, and derives bounds the wallet checks on-chain in the same atomic call.
+If the chain changes between the check and execution, the transaction still meets the policy or it reverts.
 
-AI agents that control crypto wallets read content an attacker can write: emails, docs, token metadata, tool output. Sooner or later one of them will be talked into proposing a bad transaction. This repository contains a guard that sits between the agent and its signing key. It also contains the testbed and experiments behind the paper [*Proof-Gated Signing: Solver-Checked Transaction Guards that Hold Under State Drift for Onchain AI Agents*](paper/main.pdf).
+This repository has the guard as a small Python library, a Solidity test wallet on a local Hardhat chain, and the testbed, experiments and results behind the paper [*Proof-Gated Signing: Solver-Checked Transaction Guards that Hold Under State Drift for Onchain AI Agents*](https://arxiv.org/abs/2610.00354) (arXiv:2610.00354, [PDF in this repo](paper/main.pdf)).
 
 ## The problem
 
@@ -63,50 +65,147 @@ Main observations:
 
 The full breakdown by attack family, with confidence intervals and the LLM-judge comparison, is in the paper.
 
-## What it doesn't cover
+## Install
 
-The guarantee covers tracked assets, payee receipts, approvals and ownership, for every price in the oracle band and under any state change between check and execution. It does not cover:
+You need Python 3.11 and Node.js 22 LTS (Hardhat 2.29.1 supports Node 20, 22 and 24; CI uses 22).
 
-- **Assets the guard doesn't track**, such as NFTs or positions without a balance view. Unpriced token flows are refused instead.
+```bash
+git clone https://github.com/Cygnux-Labs/Proof-Gated-Signing && cd Proof-Gated-Signing
+python3.11 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt   # exact versions; the file says how they were chosen
+npm ci                            # Hardhat 2.29.1 and solc 0.8.26, from package-lock.json
+node compile.js                   # rebuilds build/artifacts.json; the output matches the committed file
+python -m pytest                  # 22 tests; starts and stops its own Hardhat node
+```
+
+To use only the library in another project: `pip install git+https://github.com/Cygnux-Labs/Proof-Gated-Signing` (it needs `web3` and `z3-solver`).
+
+## Use it as a library
+
+One call decides on one batch of calls the wallet would make:
+
+```python
+import pgs
+
+policy = pgs.Policy(
+    prices={"USDC": 1.0, "WETH": 2500.0, "ETH": 2500.0},    # nominal USD prices; "ETH" is the native coin
+    assets={"USDC": usdc, "WETH": weth},                    # token addresses (checksummed)
+    band=0.005,                                             # true prices are within +-0.5%
+    max_rel_loss=0.03, floor_usd=25.0, window_usd=5000.0,   # lose at most 3% + $25 per batch, $5k per session
+    payees={alice: 20_000.0},                               # who may be paid, and up to how much per batch
+    trusted_spenders={pool},                                # who may keep an allowance
+    owned=[vault])                                          # contracts whose owner() must stay the wallet
+chain = pgs.Web3Chain(w3, wallet=wallet, sender=agent)      # the state provider
+session = pgs.Session()                                     # loss so far, against window_usd
+
+calls = [{"target": usdc, "value": 0, "data": "0x095ea7b3..."}, ...]   # what the agent proposes
+v = pgs.check(policy, calls, chain, session)
+if v.allow:
+    batch = [(c["target"], c["value"], bytes.fromhex(c["data"][2:])) for c in calls]
+    wallet_contract.functions.executeChecked(batch, *v.post).transact({"from": agent})
+    session.record(realized_loss_usd, v.effects)            # after it executes: value lost net of payments
+else:
+    print(v.reasons, v.counterexample)
+```
+
+`pgs.check(policy, calls, chain, session=None, mode="sim+assert")` returns a `Verdict`:
+
+| Field | What it holds |
+|---|---|
+| `allow` | whether the guard would sign |
+| `reasons` | why it refused, for example `eoa-recipient-not-allowlisted:0x…` or `value-policy:{…}` |
+| `post` | the bounds: balance, allowance, owner and receipt checks, the four arrays `AgentWallet.executeChecked` takes (`None` if refused, or in `mode="sim"`) |
+| `proof` | the SMT-LIB query Z3 found unsat: the bounds (or, in `mode="sim"`, the simulated outcome) imply the policy at every price in the band. Any SMT solver can recheck it |
+| `counterexample` | the solver's counterexample when the policy or the bounds fail, for example `{"violated": "relative-loss", "loss_usd": 1000.0}` |
+| `effects` | what the simulation did: balance changes, allowances, owners, payments |
+
+Malformed calls or policies raise `ValueError` before the chain is touched. `pgs.prove(policy, box, exact, payments)` runs the solver step alone, with no chain. `pgs.Web3Chain` needs a node with `evm_snapshot`/`evm_revert` and an unlocked `sender` (tested on Hardhat); any object with the same methods can replace it (see `pgs/chain.py`). The wallet must implement `executeChecked` like `AgentWallet` in `contracts/Testbed.sol`.
+
+[`examples/check_tx.py`](examples/check_tx.py) runs this against the local chain: an allowed swap with its bounds, a refused payment with its counterexample, and a front-run that makes the wallet revert the swap.
+
+```console
+$ ./node.sh 8545 && python examples/check_tx.py --port 8545
+up
+swap 10,000 USDC -> WETH: allowed
+  bound: wallet USDC changes by at least -10,000.0000
+  bound: wallet WETH changes by at least 3.9442
+  bound: wallet ETH changes by at least 0.0000
+  proof: 35 lines of SMT-LIB that Z3 found unsat
+transfer 1,000 USDC to an unknown address: refused
+  reasons: eoa-recipient-not-allowlisted:0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC | counterexample: {'violated': 'relative-loss', 'loss_usd': 1000.0}
+after drift: the wallet reverted the swap on-chain: True
+```
+
+## Reproduce the paper
+
+After [Install](#install). `./node.sh PORT` starts a Hardhat node, or restarts it if one is already running there (Linux and macOS). Outputs go to `/tmp` so the committed `results/` stay as they are.
+
+```bash
+# Tables 3 and 4, Fig. 2, the 1,300 runs and the gas overhead (about 8 minutes)
+./node.sh 8545
+python eval/run.py --variants 10 --port 8545 --committed-nonces --out /tmp/runs.jsonl --judge-out /tmp/judge_inputs.json
+python eval/compare.py /tmp/runs.jsonl                           # 1300/1300 runs identical (all fields but latency_s)
+python eval/summarize.py /tmp/runs.jsonl /tmp/summary.json       # tables, confidence intervals, gas
+diff <(grep -v latency results/summary.json) <(grep -v latency /tmp/summary.json)   # no output
+
+# Session study: 183/200 with price restoration, 155/200 without
+./node.sh 8545 && python eval/session.py --port 8545 --sessions 5 --length 40 --arb --out /tmp/benign_sessions_arb.json
+./node.sh 8545 && python eval/session.py --port 8545 --sessions 5 --length 40 --out /tmp/benign_sessions.json
+cmp /tmp/benign_sessions_arb.json results/benign_sessions_arb.json && cmp /tmp/benign_sessions.json results/benign_sessions.json
+
+# LLM wallet-agent episodes: replay of the recorded proposals under each defense
+./node.sh 8545 && python agent/eval_episodes.py --port 8545 --out /tmp/agent_episodes.jsonl
+cmp /tmp/agent_episodes.jsonl results/agent_episodes.jsonl
+```
+
+`--committed-nonces` starts the deployer at nonce 188 and the attacker at nonce 19, as on the node that produced `results/runs.jsonl`, where earlier runs had used those nonces (one world build takes 47 deployer transactions; 188 is four builds). Contract addresses then match the committed run. Without it, on a fresh node, 180 of the 1,300 runs differ from the committed file: 90 only in contract addresses inside reason strings, 90 by a few units of gas (calldata costs depend on the zero bytes in an address). No decision, harm label or attacker gain changes. `judge_inputs.json` can differ in key order only: it comes from iterating a set, which depends on Python's hash seed.
+
+Not reproducible offline: the LLM-judge comparison (Table 5, Fig. 3) needs model calls (`eval/judge_batches.py`, `eval/judge_prompt.md`); its inputs and outputs are in `results/judge/` and `results/v1/summary_llm.json`. Latency depends on the machine (the paper: 163 ms median on a shared 2-vCPU container; 50-65 ms on an Apple-silicon Mac). `python eval/figures.py` regenerates the figures into `paper/figs/`.
+
+## Limits
+
+What the paper's Theorem 1 guarantees, for a batch that executes through `executeChecked`:
+
+- the value policy on tracked assets, for every price in the oracle band;
+- credited payees receive at least the credited amount;
+- checked allowances don't exceed their simulated values;
+- owned contracts keep their owner;
+- all of the above under any state change between the check and execution.
+
+Bounded, not prevented:
+
+- **Losses that stay within the per-batch policy** (fees, slow in-policy drains): only the session budget caps them.
+- **Drift smaller than the post-condition tolerance** (1% of the inflow by default) plus the price band.
+
+Out of scope, as the paper states (Table 1 and Section 6):
+
+- **Untracked assets**, such as NFTs or positions without a balance view. Unpriced token flows are refused instead.
 - **Off-chain signatures** such as permits, which never pass through the transaction path.
-- **Losses that stay within policy.** These are only capped per session.
-- **Drift smaller than the post-condition tolerance**, about 1% of the inflow by default.
-- **A badly chosen policy, a wrong oracle band, or an agent that holds the signing key itself.**
+- **ETH sent to EOAs by internal calls, and allowances never observed**: these are checked on the simulation only.
+- **A wrong policy, a wrong oracle band, or a dishonest tracked token**: these are trusted inputs.
+- **An agent that holds the signing key** and calls the unguarded path. The deployment must give key custody to the guard.
+- **Real-world rates.** The testbed is a simplified local chain (constant-product pools, a static oracle) with attacks we wrote. The rates describe this suite, not real-world performance.
 
-The testbed is also a simplified local chain with attacks we wrote. Replaying real exploits on a mainnet fork, and testing against a held-out attack set, are the obvious next steps.
+In this code:
 
-## Running it
-
-```bash
-npm i solc@0.8.26 hardhat@2
-pip install z3-solver web3 matplotlib
-
-node compile.js          # compile contracts
-./node.sh 8545           # start a local Hardhat node
-
-python3 eval/run.py --variants 10    # all scenarios under all defenses (~15-20 min)
-python3 eval/summarize.py            # tables and confidence intervals
-```
-
-Other experiments:
-
-```bash
-python3 eval/session.py --sessions 5 --length 40 --arb   # long runs of normal activity
-python3 agent/eval_episodes.py --port 8545               # replay LLM agent proposals
-python3 eval/figures.py                                  # regenerate figures
-```
-
-A fresh rerun reproduced all 1,300 runs exactly.
+- Key custody isn't built. In the testbed the agent's account owns `AgentWallet`, and both `execute` (unguarded) and `executeChecked` accept it. An ERC-4337 validator that enforces custody on-chain is the paper's future work.
+- The contracts in `contracts/Testbed.sol` are unaudited test contracts. Run them on a local chain only, never with keys or funds that have value.
+- Prices are static numbers in the policy. There is no oracle.
+- An EOA is an address with no code. An EIP-7702-delegated EOA has code, so the "value to EOAs only to payees" check treats it as a contract. The value policy still counts the outflow as a loss.
+- The match between the Z3 encoding and the Solidity checks is checked by hand and by tests (`tests/test_api.py` samples Theorem 1 on real verdicts), not machine-proved.
 
 ## Layout
 
 ```
 contracts/Testbed.sol   tokens, pools, vault, attack contracts, and AgentWallet.executeChecked
-pgs/guard.py            simulation, effect extraction, Z3 checks, post-condition compilation
+pgs/guard.py            the method: check, simulate, prove; Policy, Session, Verdict
+pgs/chain.py            Web3Chain, the state provider for a Hardhat (or similar) node
 pgs/scenarios.py        attack and benign scenario families
-pgs/defenses.py         baselines and PGS variants
+pgs/defenses.py         baselines, and PGS through pgs.check
 pgs/world.py            deploys the test world
-eval/                   experiment runners, summaries, figures, LLM-judge prompt
+tests/                  pytest tests of the library
+examples/               the library example
+eval/                   experiment runners, summaries, figures, LLM-judge prompt, compare.py
 agent/                  CLI and episodes for the LLM wallet agents
 results/                raw per-run logs and summaries
 paper/                  LaTeX source and PDF
@@ -114,12 +213,17 @@ paper/                  LaTeX source and PDF
 
 ## Citation
 
+If you use PGS, please cite the paper (also in [CITATION.cff](CITATION.cff)):
+
 ```bibtex
 @misc{ghosh2026proofgated,
-  title  = {Proof-Gated Signing: Solver-Checked Transaction Guards that Hold Under State Drift for Onchain AI Agents},
-  author = {Ghosh, Bravish},
-  year   = {2026},
-  note   = {Preprint}
+  title         = {Proof-Gated Signing: Solver-Checked Transaction Guards that Hold Under State Drift for Onchain AI Agents},
+  author        = {Ghosh, Bravish},
+  year          = {2026},
+  eprint        = {2610.00354},
+  archivePrefix = {arXiv},
+  doi           = {10.48550/arXiv.2610.00354},
+  note          = {Preprint}
 }
 ```
 
